@@ -2826,8 +2826,10 @@ function compile_mlir!(
         end
     end
 
+    ndevices_val = Val(is_sharded ? length(mlir_fn_res.global_device_ids) : 1)
     concrete_result = make_tracer(
-        OrderedIdDict(), traced_result, ("result",), TracedToConcrete; runtime
+        OrderedIdDict(), traced_result, ("result",), TracedToConcrete;
+        runtime, ndevices=ndevices_val
     )
 
     return Reactant.TracedUtils.CompiledMlirFnResult(
