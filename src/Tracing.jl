@@ -1010,13 +1010,14 @@ function typevar_dict(t)
 end
 
 Base.@assume_effects :total @inline function traced_type(
-    T::Type, ::Val{mode}, track_numbers::Type, sharding, runtime
+    T::Type, ::Val{mode}, track_numbers::Type, sharding, runtime;
+    ndevices_override::Int=0
 ) where {mode}
     if mode == TracedSetPath || mode == TracedTrack || mode == TracedToTypes
         return T
     end
 
-    ndevices = Sharding.ndevices(sharding)
+    ndevices = ndevices_override > 0 ? ndevices_override : Sharding.ndevices(sharding)
     cache = nothing
     cache_key = (mode, track_numbers, ndevices)
     if haskey(traced_type_cache, cache_key)
@@ -1103,7 +1104,9 @@ Base.@nospecializeinfer function make_tracer_via_immutable_constructor(
         push!(path, RT)
         seen[prev] = VisitedObject(length(seen) + 1)
     end
-    TT = traced_type(RT, Val(mode), track_numbers, sharding, runtime)
+    ndevices_kw = get(kwargs, :ndevices, nothing)
+    ndevices_override = ndevices_kw === nothing ? 0 : _unwrap_val(ndevices_kw)
+    TT = traced_type(RT, Val(mode), track_numbers, sharding, runtime; ndevices_override)
     @assert !Base.isabstracttype(RT)
     @assert Base.isconcretetype(RT)
     nf = fieldcount(RT)
@@ -1187,7 +1190,9 @@ Base.@nospecializeinfer function make_tracer_unknown(
         push!(path, RT)
         seen[prev] = VisitedObject(length(seen) + 1)
     end
-    TT = traced_type(RT, Val(mode), track_numbers, sharding, runtime)
+    ndevices_kw = get(kwargs, :ndevices, nothing)
+    ndevices_override = ndevices_kw === nothing ? 0 : _unwrap_val(ndevices_kw)
+    TT = traced_type(RT, Val(mode), track_numbers, sharding, runtime; ndevices_override)
     @assert !Base.isabstracttype(RT)
     @assert Base.isconcretetype(RT)
     nf = fieldcount(RT)
@@ -1498,15 +1503,13 @@ Base.@nospecializeinfer function make_tracer(
     end
 
     if mode == TracedToConcrete
+        ndevs = _unwrap_val(get(kwargs, :ndevices, Val(1)))
         if runtime isa Val{:PJRT}
             haskey(seen, prev) && return seen[prev]::ConcretePJRTArray{T,N}
-            if !Sharding.is_sharded(sharding)
-                res = ConcretePJRTArray{T,N,1}(
-                    (XLA.PJRT.AsyncEmptyBuffer,), size(prev), Sharding.NoShardInfo()
-                )
-            else
-                error("TODO(#2230): implement sharding")
-            end
+            empty_bufs = ntuple(_ -> XLA.PJRT.AsyncEmptyBuffer, ndevs)
+            res = ConcretePJRTArray{T,N,ndevs}(
+                empty_bufs, size(prev), Sharding.NoShardInfo()
+            )
             seen[prev] = res
             return res
         elseif runtime isa Val{:IFRT}
@@ -1516,7 +1519,7 @@ Base.@nospecializeinfer function make_tracer(
                     XLA.IFRT.AsyncEmptyArray, size(prev), Sharding.NoShardInfo()
                 )
             else
-                error("TODO(#2230): implement sharding")
+                error("TODO(#2230): implement sharding for IFRT")
             end
             seen[prev] = res
             return res
@@ -1587,15 +1590,13 @@ Base.@nospecializeinfer function make_tracer(
     end
 
     if mode == TracedToConcrete
+        ndevs = _unwrap_val(get(kwargs, :ndevices, Val(1)))
         if runtime isa Val{:PJRT}
             haskey(seen, prev) && return seen[prev]::ConcretePJRTNumber{T}
-            if !Sharding.is_sharded(sharding)
-                res = ConcretePJRTNumber{T,1}(
-                    (XLA.PJRT.AsyncEmptyBuffer,), Sharding.NoShardInfo()
-                )
-            else
-                error("TODO(#2230): implement sharding")
-            end
+            empty_bufs = ntuple(_ -> XLA.PJRT.AsyncEmptyBuffer, ndevs)
+            res = ConcretePJRTNumber{T,ndevs}(
+                empty_bufs, Sharding.NoShardInfo()
+            )
             seen[prev] = res
             return res
         elseif runtime isa Val{:IFRT}
@@ -2002,7 +2003,9 @@ Base.@nospecializeinfer function make_tracer(
         end
         return nothing
     end
-    return NamedTuple{A,traced_type(RT, Val(mode), track_numbers, sharding, runtime)}((
+    ndevices_kw = get(kwargs, :ndevices, nothing)
+    ndevices_override = ndevices_kw === nothing ? 0 : _unwrap_val(ndevices_kw)
+    return NamedTuple{A,traced_type(RT, Val(mode), track_numbers, sharding, runtime; ndevices_override)}((
         (
             make_tracer(
                 seen,
